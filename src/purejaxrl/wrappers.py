@@ -7,16 +7,19 @@ from functools import partial
 from typing import Optional, Tuple, Union, Any
 from gymnax.environments import environment, spaces
 from brax import envs
+from brax.envs.wrappers.training import EpisodeWrapper, AutoResetWrapper
+
 
 class GymnaxWrapper(object):
     """Base class for Gymnax wrappers."""
 
     def __init__(self, env):
         self._env = env
-    
+
     # provide proxy access to regular attributes of wrapped object
     def __getattr__(self, name):
         return getattr(self._env, name)
+
 
 class FlattenObservationWrapper(GymnaxWrapper):
     """Flatten the observations of the environment."""
@@ -25,7 +28,9 @@ class FlattenObservationWrapper(GymnaxWrapper):
         super().__init__(env)
 
     def observation_space(self, params) -> spaces.Box:
-        assert isinstance(self._env.observation_space(params), spaces.Box), "Only Box spaces are supported for now."
+        assert isinstance(
+            self._env.observation_space(params), spaces.Box
+        ), "Only Box spaces are supported for now."
         return spaces.Box(
             low=self._env.observation_space(params).low,
             high=self._env.observation_space(params).high,
@@ -49,51 +54,58 @@ class FlattenObservationWrapper(GymnaxWrapper):
         action: Union[int, float],
         params: Optional[environment.EnvParams] = None,
     ) -> Tuple[chex.Array, environment.EnvState, float, bool, dict]:
-        obs, state, reward, done, info = self._env.step(key, state, action, params)
+        obs, state, reward, done, info = self._env.step(
+            key, state, action, params)
         obs = jnp.reshape(obs, (-1,))
         return obs, state, reward, done, info
 
+
 @struct.dataclass
 class LogEnvState:
-    env_state: environment.EnvState
+    env_state: Any
     episode_returns: float
     episode_lengths: int
     returned_episode_returns: float
     returned_episode_lengths: int
     timestep: int
 
+
 class LogWrapper(GymnaxWrapper):
     """Log the episode returns and lengths."""
 
-    def __init__(self, env: environment.Environment):
+    def __init__(self, env):
         super().__init__(env)
 
-    @partial(jax.jit, static_argnums=(0,))
-    def reset(
-        self, key: chex.PRNGKey, params: Optional[environment.EnvParams] = None
-    ) -> Tuple[chex.Array, environment.EnvState]:
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, key: chex.PRNGKey, params=None):
         obs, env_state = self._env.reset(key, params)
-        state = LogEnvState(env_state, 0, 0, 0, 0, 0)
+        state = LogEnvState(env_state, 0.0, 0, 0.0, 0, 0)
         return obs, state
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0, 4))
     def step(
         self,
         key: chex.PRNGKey,
-        state: environment.EnvState,
+        state,
         action: Union[int, float],
-        params: Optional[environment.EnvParams] = None,
-    ) -> Tuple[chex.Array, environment.EnvState, float, bool, dict]:
-        obs, env_state, reward, done, info = self._env.step(key, state.env_state, action, params)
+        params=None,
+    ):
+        obs, env_state, reward, done, info = self._env.step(
+            key, state.env_state, action, params
+        )
         new_episode_return = state.episode_returns + reward
         new_episode_length = state.episode_lengths + 1
         state = LogEnvState(
-            env_state = env_state,
-            episode_returns = new_episode_return * (1 - done),
-            episode_lengths = new_episode_length * (1 - done),
-            returned_episode_returns = state.returned_episode_returns * (1 - done) + new_episode_return * done,
-            returned_episode_lengths = state.returned_episode_lengths * (1 - done) + new_episode_length * done,
-            timestep = state.timestep + 1,
+            env_state=env_state,
+            episode_returns=new_episode_return * (1 - done),
+            episode_lengths=new_episode_length * (1 - done),
+            returned_episode_returns=state.returned_episode_returns *
+            (1 - done)
+            + new_episode_return * done,
+            returned_episode_lengths=state.returned_episode_lengths *
+            (1 - done)
+            + new_episode_length * done,
+            timestep=state.timestep + 1,
         )
         info["returned_episode_returns"] = state.returned_episode_returns
         info["returned_episode_lengths"] = state.returned_episode_lengths
@@ -101,11 +113,12 @@ class LogWrapper(GymnaxWrapper):
         info["returned_episode"] = done
         return obs, state, reward, done, info
 
+
 class BraxGymnaxWrapper:
     def __init__(self, env_name, backend="positional"):
         env = envs.get_environment(env_name=env_name, backend=backend)
-        env = envs.wrapper.EpisodeWrapper(env, episode_length=1000, action_repeat=1)
-        env = envs.wrapper.AutoResetWrapper(env)
+        env = EpisodeWrapper(env, episode_length=1000, action_repeat=1)
+        env = AutoResetWrapper(env)
         self._env = env
         self.action_size = env.action_size
         self.observation_size = (env.observation_size,)
@@ -132,6 +145,7 @@ class BraxGymnaxWrapper:
             shape=(self._env.action_size,),
         )
 
+
 class ClipAction(GymnaxWrapper):
     def __init__(self, env, low=-1.0, high=1.0):
         super().__init__(env)
@@ -144,6 +158,7 @@ class ClipAction(GymnaxWrapper):
         action = jnp.clip(action, self.low, self.high)
         return self._env.step(key, state, action, params)
 
+
 class TransformObservation(GymnaxWrapper):
     def __init__(self, env, transform_obs):
         super().__init__(env)
@@ -154,8 +169,10 @@ class TransformObservation(GymnaxWrapper):
         return self.transform_obs(obs), state
 
     def step(self, key, state, action, params=None):
-        obs, state, reward, done, info = self._env.step(key, state, action, params)
+        obs, state, reward, done, info = self._env.step(
+            key, state, action, params)
         return self.transform_obs(obs), state, reward, done, info
+
 
 class TransformReward(GymnaxWrapper):
     def __init__(self, env, transform_reward):
@@ -163,15 +180,109 @@ class TransformReward(GymnaxWrapper):
         self.transform_reward = transform_reward
 
     def step(self, key, state, action, params=None):
-        obs, state, reward, done, info = self._env.step(key, state, action, params)
+        obs, state, reward, done, info = self._env.step(
+            key, state, action, params)
         return obs, state, self.transform_reward(reward), done, info
 
 
-class VecEnv(GymnaxWrapper):
-    def __init__(self, env):
+class BatchEnvWrapper(GymnaxWrapper):
+    """Batches reset and step functions"""
+
+    def __init__(self, env, num_envs: int):
         super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0, None))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0, None))
+
+        self.num_envs = num_envs
+
+        self.reset_fn = jax.vmap(self._env.reset, in_axes=(0, None))
+        self.step_fn = jax.vmap(self._env.step, in_axes=(0, 0, 0, None))
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, rng, params=None):
+        rng, _rng = jax.random.split(rng)
+        rngs = jax.random.split(_rng, self.num_envs)
+        obs, env_state = self.reset_fn(rngs, params)
+        return obs, env_state
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, rng, state, action, params=None):
+        rng, _rng = jax.random.split(rng)
+        rngs = jax.random.split(_rng, self.num_envs)
+        obs, state, reward, done, info = self.step_fn(
+            rngs, state, action, params)
+
+        return obs, state, reward, done, info
+
+
+class OptimisticResetVecEnvWrapper(GymnaxWrapper):
+    """
+    Provides efficient 'optimistic' resets.
+    The wrapper also necessarily handles the batching of environment steps and resetting.
+    reset_ratio: the number of environment workers per environment reset.  Higher means more efficient but a higher
+    chance of duplicate resets.
+    """
+
+    def __init__(self, env, num_envs: int, reset_ratio: int):
+        super().__init__(env)
+
+        self.num_envs = num_envs
+        self.reset_ratio = reset_ratio
+        assert (
+            num_envs % reset_ratio == 0
+        ), "Reset ratio must perfectly divide num envs."
+        self.num_resets = self.num_envs // reset_ratio
+
+        self.reset_fn = jax.vmap(self._env.reset, in_axes=(0, None))
+        self.step_fn = jax.vmap(self._env.step, in_axes=(0, 0, 0, None))
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, rng, params=None):
+        rng, _rng = jax.random.split(rng)
+        rngs = jax.random.split(_rng, self.num_envs)
+        obs, env_state = self.reset_fn(rngs, params)
+        return obs, env_state
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, rng, state, action, params=None):
+
+        rng, _rng = jax.random.split(rng)
+        rngs = jax.random.split(_rng, self.num_envs)
+        obs_st, state_st, reward, done, info = self.step_fn(
+            rngs, state, action, params)
+
+        rng, _rng = jax.random.split(rng)
+        rngs = jax.random.split(_rng, self.num_resets)
+        obs_re, state_re = self.reset_fn(rngs, params)
+
+        rng, _rng = jax.random.split(rng)
+        reset_indexes = jnp.arange(self.num_resets).repeat(self.reset_ratio)
+
+        being_reset = jax.random.choice(
+            _rng,
+            jnp.arange(self.num_envs),
+            shape=(self.num_resets,),
+            p=done,
+            replace=False,
+        )
+        reset_indexes = reset_indexes.at[being_reset].set(
+            jnp.arange(self.num_resets))
+
+        obs_re = obs_re[reset_indexes]
+        state_re = jax.tree_map(lambda x: x[reset_indexes], state_re)
+
+        # Auto-reset environment based on termination
+        def auto_reset(done, state_re, state_st, obs_re, obs_st):
+            state = jax.tree_map(
+                lambda x, y: jnp.where(done, x, y), state_re, state_st
+            )
+            obs = jax.lax.select(done, obs_re, obs_st)
+
+            return state, obs
+
+        state, obs = jax.vmap(auto_reset)(
+            done, state_re, state_st, obs_re, obs_st)
+
+        return obs, state, reward, done, info
+
 
 @struct.dataclass
 class NormalizeVecObsEnvState:
@@ -179,6 +290,7 @@ class NormalizeVecObsEnvState:
     var: jnp.ndarray
     count: float
     env_state: environment.EnvState
+
 
 class NormalizeVecObservation(GymnaxWrapper):
     def __init__(self, env):
@@ -202,7 +314,8 @@ class NormalizeVecObservation(GymnaxWrapper):
         new_mean = state.mean + delta * batch_count / tot_count
         m_a = state.var * state.count
         m_b = batch_var * batch_count
-        M2 = m_a + m_b + jnp.square(delta) * state.count * batch_count / tot_count
+        M2 = m_a + m_b + jnp.square(delta) * \
+            state.count * batch_count / tot_count
         new_var = M2 / tot_count
         new_count = tot_count
 
@@ -216,7 +329,9 @@ class NormalizeVecObservation(GymnaxWrapper):
         return (obs - state.mean) / jnp.sqrt(state.var + 1e-8), state
 
     def step(self, key, state, action, params=None):
-        obs, env_state, reward, done, info = self._env.step(key, state.env_state, action, params)
+        obs, env_state, reward, done, info = self._env.step(
+            key, state.env_state, action, params
+        )
 
         batch_mean = jnp.mean(obs, axis=0)
         batch_var = jnp.var(obs, axis=0)
@@ -228,7 +343,8 @@ class NormalizeVecObservation(GymnaxWrapper):
         new_mean = state.mean + delta * batch_count / tot_count
         m_a = state.var * state.count
         m_b = batch_var * batch_count
-        M2 = m_a + m_b + jnp.square(delta) * state.count * batch_count / tot_count
+        M2 = m_a + m_b + jnp.square(delta) * \
+            state.count * batch_count / tot_count
         new_var = M2 / tot_count
         new_count = tot_count
 
@@ -238,7 +354,13 @@ class NormalizeVecObservation(GymnaxWrapper):
             count=new_count,
             env_state=env_state,
         )
-        return (obs - state.mean) / jnp.sqrt(state.var + 1e-8), state, reward, done, info
+        return (
+            (obs - state.mean) / jnp.sqrt(state.var + 1e-8),
+            state,
+            reward,
+            done,
+            info,
+        )
 
 
 @struct.dataclass
@@ -249,8 +371,8 @@ class NormalizeVecRewEnvState:
     return_val: float
     env_state: environment.EnvState
 
-class NormalizeVecReward(GymnaxWrapper):
 
+class NormalizeVecReward(GymnaxWrapper):
     def __init__(self, env, gamma):
         super().__init__(env)
         self.gamma = gamma
@@ -268,9 +390,11 @@ class NormalizeVecReward(GymnaxWrapper):
         return obs, state
 
     def step(self, key, state, action, params=None):
-        obs, env_state, reward, done, info = self._env.step(key, state.env_state, action, params)
-        return_val = (state.return_val * self.gamma * (1 - done) + reward)
- 
+        obs, env_state, reward, done, info = self._env.step(
+            key, state.env_state, action, params
+        )
+        return_val = state.return_val * self.gamma * (1 - done) + reward
+
         batch_mean = jnp.mean(return_val, axis=0)
         batch_var = jnp.var(return_val, axis=0)
         batch_count = obs.shape[0]
@@ -281,7 +405,8 @@ class NormalizeVecReward(GymnaxWrapper):
         new_mean = state.mean + delta * batch_count / tot_count
         m_a = state.var * state.count
         m_b = batch_var * batch_count
-        M2 = m_a + m_b + jnp.square(delta) * state.count * batch_count / tot_count
+        M2 = m_a + m_b + jnp.square(delta) * \
+            state.count * batch_count / tot_count
         new_var = M2 / tot_count
         new_count = tot_count
 
