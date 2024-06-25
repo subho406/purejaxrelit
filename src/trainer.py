@@ -51,8 +51,9 @@ def main(config: DictConfig):
                                  r=config['RNN']['R'])
 
         def rnn_carry_init(batch_size):
-            return BatchedAReLiT.initialize_carry(batch_size, n_layers=2, n_heads=4, d_head=64,
-                                                  eta=4, r=2)
+            return BatchedAReLiT.initialize_carry(batch_size, n_layers=config['RNN']['N_LAYERS'], n_heads=config['RNN']['N_HEADS'],
+                                                  d_head=config['RNN']['D_HEAD'],
+                                                  eta=config['RNN']['ETA'], r=config['RNN']['R'])
     # Initialize the env
     if config["ENV_NAME"] == "craftax":
         from craftax.craftax.envs.craftax_symbolic_env import CraftaxSymbolicEnv
