@@ -342,6 +342,7 @@ class AttentionORLiTLayer(nn.Module):
         else:
             discount_gamma = (1-gammas)  # (cur_seq, head_num, eta * head_dim)
             discount_beta = (1-beta)  # (cur_seq, head_num, head_dim)
+
         final_keys = discounted_sum_parallel(tilde_k_prev, keys, jnp.expand_dims(
             discount_gamma, 1))  # (cur_seq,  r, head_num, eta * head_dim)
         final_values = discounted_sum_parallel(tilde_v_prev, values, jnp.expand_dims(

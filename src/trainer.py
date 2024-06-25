@@ -8,8 +8,9 @@ def main(config: DictConfig):
     from purejaxrl.ppo_rnn import make_update
     from models.arelit import BatchedAReLiT
     from models.gru import BatchedGRU
+    from models.gtrxl import BatchedGTrXL
     from purejaxrl.wrappers import FlattenObservationWrapper, LogWrapper, AutoResetEnvWrapper
-    from omegaconf import DictConfig, OmegaConf
+    from omegaconf import OmegaConf
     from tqdm.contrib.logging import logging_redirect_tqdm
 
     import jax
@@ -40,6 +41,7 @@ def main(config: DictConfig):
 
         def rnn_carry_init(batch_size):
             return BatchedGRU.initialize_carry(batch_size, config['RNN']['HIDDEN_SIZE'])
+
     elif config['RNN']['RNN_TYPE'] == "arelit":
         def rnn_module():
             return BatchedAReLiT(n_layers=config['RNN']['N_LAYERS'],
@@ -54,7 +56,23 @@ def main(config: DictConfig):
             return BatchedAReLiT.initialize_carry(batch_size, n_layers=config['RNN']['N_LAYERS'], n_heads=config['RNN']['N_HEADS'],
                                                   d_head=config['RNN']['D_HEAD'],
                                                   eta=config['RNN']['ETA'], r=config['RNN']['R'])
-    # Initialize the env
+
+    elif config['RNN']['RNN_TYPE'] == "gtrxl":
+        def rnn_module():
+            return BatchedGTrXL(head_dim=config['RNN']['HEAD_DIM'],
+                                embedding_dim=config['RNN']['EMBEDDING_DIM'],
+                                head_num=config['RNN']['HEAD_NUM'],
+                                mlp_num=config['RNN']['MLP_NUM'],
+                                layer_num=config['RNN']['LAYER_NUM'],
+                                memory_len=config['RNN']['MEMORY_LEN'],
+                                )
+
+        def rnn_carry_init(batch_size):
+            return BatchedGTrXL.initialize_carry(batch_size, memory_len=config['RNN']['MEMORY_LEN'],
+                                                 embedding_dim=config['RNN']['EMBEDDING_DIM'],
+                                                 layer_num=config['RNN']['LAYER_NUM'])
+
+        # Initialize the env
     if config["ENV_NAME"] == "craftax":
         from craftax.craftax.envs.craftax_symbolic_env import CraftaxSymbolicEnv
         env = CraftaxSymbolicEnv()
@@ -67,12 +85,9 @@ def main(config: DictConfig):
         env = AutoResetEnvWrapper(env)
         env = LogWrapper(env)
 
-    rng = jax.random.PRNGKey(30)
+    rng = jax.random.PRNGKey(config['SEED'])
     update_fn, runner_state = make_update(rng, config, env,
                                           env_params, rnn_module, rnn_carry_init)
-    num_updates = (
-        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
-    )
     global_step = 0  # Global step counter
     pbar = tqdm.tqdm(total=config['TOTAL_TIMESTEPS'])
     try:
