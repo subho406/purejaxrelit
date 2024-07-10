@@ -3,23 +3,26 @@ import multiprocessing as mp
 from omegaconf import DictConfig, OmegaConf
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="default_config")
+@hydra.main(version_base=None, config_path="config/", config_name="default_config")
 def main(config: DictConfig):
-    from purejaxrl.ppo_rnn import make_update
-    from models.arelit import BatchedAReLiT
-    from models.gru import BatchedGRU
-    from models.gtrxl import BatchedGTrXL
-    from purejaxrl.wrappers import FlattenObservationWrapper, LogWrapper, AutoResetEnvWrapper
-    from omegaconf import OmegaConf
+    import sys
+    sys.path.append(".")
+    sys.path.append("src/")
+    from src.purejaxrl.ppo_rnn import make_update
+    from src.models.arelit import BatchedAReLiT
+    from src.models.gru import BatchedGRU
+    from src.models.gtrxl import BatchedGTrXL
+    from src.purejaxrl.wrappers import FlattenObservationWrapper, LogWrapper, AutoResetEnvWrapper
+    from omegaconf import DictConfig, OmegaConf
     from tqdm.contrib.logging import logging_redirect_tqdm
 
     import jax
     import gymnax
-    import sys
+    
     import tqdm
     import wandb
     import logging
-    sys.path.append(".")
+    
 
     config = OmegaConf.to_object(config)
 
@@ -32,7 +35,8 @@ def main(config: DictConfig):
 
     if config["USE_WANDB"]:
         # Initialize the wandb logger
-        wandb.init(project=config["WANDB_PROJECT"],
+        wandb.init(config=config,
+                    project=config["WANDB_PROJECT"],
                    tags=config["WANDB_TAGS"])
 
     if config['RNN']['RNN_TYPE'] == "gru":
@@ -41,7 +45,6 @@ def main(config: DictConfig):
 
         def rnn_carry_init(batch_size):
             return BatchedGRU.initialize_carry(batch_size, config['RNN']['HIDDEN_SIZE'])
-
     elif config['RNN']['RNN_TYPE'] == "arelit":
         def rnn_module():
             return BatchedAReLiT(n_layers=config['RNN']['N_LAYERS'],
@@ -56,7 +59,6 @@ def main(config: DictConfig):
             return BatchedAReLiT.initialize_carry(batch_size, n_layers=config['RNN']['N_LAYERS'], n_heads=config['RNN']['N_HEADS'],
                                                   d_head=config['RNN']['D_HEAD'],
                                                   eta=config['RNN']['ETA'], r=config['RNN']['R'])
-
     elif config['RNN']['RNN_TYPE'] == "gtrxl":
         def rnn_module():
             return BatchedGTrXL(head_dim=config['RNN']['HEAD_DIM'],
@@ -71,8 +73,8 @@ def main(config: DictConfig):
             return BatchedGTrXL.initialize_carry(batch_size, memory_len=config['RNN']['MEMORY_LEN'],
                                                  embedding_dim=config['RNN']['EMBEDDING_DIM'],
                                                  layer_num=config['RNN']['LAYER_NUM'])
-
-        # Initialize the env
+            
+    # Initialize the env
     if config["ENV_NAME"] == "craftax":
         from craftax.craftax.envs.craftax_symbolic_env import CraftaxSymbolicEnv
         env = CraftaxSymbolicEnv()
@@ -85,9 +87,12 @@ def main(config: DictConfig):
         env = AutoResetEnvWrapper(env)
         env = LogWrapper(env)
 
-    rng = jax.random.PRNGKey(config['SEED'])
+    rng = jax.random.PRNGKey(30)
     update_fn, runner_state = make_update(rng, config, env,
                                           env_params, rnn_module, rnn_carry_init)
+    num_updates = (
+        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
+    )
     global_step = 0  # Global step counter
     pbar = tqdm.tqdm(total=config['TOTAL_TIMESTEPS'])
     try:
